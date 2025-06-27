@@ -47,6 +47,10 @@ func _scan_directory(path: String, dir: DirAccess) -> void:
 	dir.list_dir_end()
 
 func _check_and_add_class_name(file_path: String) -> void:
+	# Skip if the file is in the addons folder
+	if file_path.begins_with("res://addons/"):
+		return
+	
 	var file = FileAccess.open(file_path, FileAccess.READ)
 	if not file:
 		return
