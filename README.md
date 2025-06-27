@@ -1,7 +1,8 @@
 # gdscript Automatically adds class_name to new script files
 
-This is a simple godot 4 plugin that automatically adds class_name using the script name to new script files
-Will not auto add class_name if in the addons folder
+This is a simple godot 4 plugin that automatically adds class_name using the script name to new script files.
+
+Will not auto add class_name if in the addons folder.
 
 ## What does it do?
 
