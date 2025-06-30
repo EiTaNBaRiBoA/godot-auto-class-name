@@ -4,6 +4,7 @@ extends EditorPlugin
 var script_editor: ScriptEditor
 var file_system: EditorFileSystem
 var tracked_files: Dictionary = {}
+var processed_files: Dictionary = {}  # Track files we've already processed
 
 func _enter_tree() -> void:
 	print("[AutoClassName] Plugin entering tree")
@@ -94,9 +95,11 @@ func _check_if_new_script(file_path: String) -> void:
 		var tracked_info = tracked_files[file_path]
 		# Check if file was modified recently and size changed
 		if time_diff < 5.0 and current_size != tracked_info["size"]:
-			is_new_file = _is_likely_new_script(file_path)
-			if is_new_file:
-				print("[AutoClassName] Detected modified script: ", file_path)
+			# Only process if we haven't already processed this file
+			if not (file_path in processed_files):
+				is_new_file = _is_likely_new_script(file_path)
+				if is_new_file:
+					print("[AutoClassName] Detected modified script: ", file_path)
 	else:
 		# Completely new file
 		if time_diff < 5.0:
@@ -167,6 +170,9 @@ func _add_class_name_to_new_script(file_path: String) -> void:
 		write_file.close()
 		print("[AutoClassName] ✓ Added class_name to: ", file_path)
 		
+		# Mark this file as processed so we don't process it again
+		processed_files[file_path] = true
+		
 		# Reload if currently open
 		_reload_script_if_open(file_path)
 	else:
@@ -183,20 +189,12 @@ func _snake_case_to_pascal_case(snake_str: String) -> String:
 	return pascal_str
 
 func _reload_script_if_open(file_path: String) -> void:
-	# Force filesystem refresh first
+	# Force filesystem refresh
 	file_system.scan()
 	
-	# Try multiple reload approaches
-	var open_scripts = script_editor.get_open_scripts()
-	for script_obj in open_scripts:
-		if script_obj.resource_path == file_path:
-			print("[AutoClassName] Reloading open script...")
-			script_editor.reload_scripts()
-			
-			# Additional reload attempt
-			await get_tree().process_frame
-			script_editor.goto_line(0)  # Force refresh by moving cursor
-			break
+	# In Godot 4, we can't directly reload scripts from the plugin
+	# The editor will automatically refresh when the file changes
+	print("[AutoClassName] File updated, editor should refresh automatically")
 
 func get_plugin_name() -> String:
 	return "Auto Class Name"
