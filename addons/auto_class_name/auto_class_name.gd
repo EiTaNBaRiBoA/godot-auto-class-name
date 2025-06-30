@@ -3,31 +3,46 @@ extends EditorPlugin
 
 var script_editor: ScriptEditor
 var file_system: EditorFileSystem
-var tracked_files: Dictionary = {}  # Track file creation times and sizes
+var tracked_files: Dictionary = {}
 
 func _enter_tree() -> void:
-	# Get references to the script editor and file system
+	print("[AutoClassName] Plugin entering tree")
+	
 	script_editor = get_editor_interface().get_script_editor()
 	file_system = get_editor_interface().get_resource_filesystem()
 	
-	# Initialize tracking of existing files
+	if not script_editor or not file_system:
+		print("[AutoClassName] ERROR: Could not get editor references")
+		return
+	
+	# Only track existing files, don't process them
 	_initialize_file_tracking()
 	
-	# Connect to the file_system's filesystem_changed signal
+	# Connect to filesystem changes
 	file_system.connect("filesystem_changed", _on_filesystem_changed)
+	print("[AutoClassName] Plugin ready - monitoring for new scripts")
 
 func _exit_tree() -> void:
-	# Disconnect from signals when plugin is disabled
 	if file_system and file_system.is_connected("filesystem_changed", _on_filesystem_changed):
 		file_system.disconnect("filesystem_changed", _on_filesystem_changed)
 
 func _initialize_file_tracking() -> void:
-	# Scan all existing .gd files and track them
-	var dir = DirAccess.open("res://")
-	if dir:
-		_track_existing_files("res://", dir)
+	# Just build a list of existing files without processing them
+	var existing_files = _get_all_gd_files("res://")
+	for file_path in existing_files:
+		if not file_path.begins_with("res://addons/"):
+			tracked_files[file_path] = {
+				"modified_time": FileAccess.get_modified_time(file_path),
+				"size": _get_file_size(file_path)
+			}
+	print("[AutoClassName] Tracking ", tracked_files.size(), " existing files")
 
-func _track_existing_files(path: String, dir: DirAccess) -> void:
+func _get_all_gd_files(path: String) -> Array:
+	var files = []
+	var dir = DirAccess.open(path)
+	if not dir:
+		return files
+		
 	dir.list_dir_begin()
 	var file_name = dir.get_next()
 	
@@ -36,20 +51,14 @@ func _track_existing_files(path: String, dir: DirAccess) -> void:
 			var full_path = path + file_name
 			
 			if dir.current_is_dir():
-				var subdir = DirAccess.open(full_path)
-				if subdir:
-					_track_existing_files(full_path + "/", subdir)
+				files.append_array(_get_all_gd_files(full_path + "/"))
 			elif file_name.ends_with(".gd"):
-				# Track this existing file
-				var file_info = {
-					"modified_time": FileAccess.get_modified_time(full_path),
-					"size": _get_file_size(full_path)
-				}
-				tracked_files[full_path] = file_info
+				files.append(full_path)
 		
 		file_name = dir.get_next()
 	
 	dir.list_dir_end()
+	return files
 
 func _get_file_size(file_path: String) -> int:
 	var file = FileAccess.open(file_path, FileAccess.READ)
@@ -60,58 +69,41 @@ func _get_file_size(file_path: String) -> int:
 	return size
 
 func _on_filesystem_changed() -> void:
-	# Wait a frame to let the file system update
+	# Wait a moment for file system to settle
 	await get_tree().process_frame
+	await get_tree().create_timer(0.1).timeout
 	
-	# Check all .gd files in the project
-	var dir = DirAccess.open("res://")
-	if dir:
-		_scan_directory("res://", dir)
-
-func _scan_directory(path: String, dir: DirAccess) -> void:
-	dir.list_dir_begin()
-	var file_name = dir.get_next()
+	# Only check for new .gd files, not all files
+	var current_files = _get_all_gd_files("res://")
 	
-	while file_name != "":
-		if file_name != "." and file_name != "..":
-			var full_path = path + file_name
+	for file_path in current_files:
+		if file_path.begins_with("res://addons/"):
+			continue
 			
-			if dir.current_is_dir():
-				var subdir = DirAccess.open(full_path)
-				if subdir:
-					_scan_directory(full_path + "/", subdir)
-			elif file_name.ends_with(".gd"):
-				_check_if_new_script(full_path)
-		
-		file_name = dir.get_next()
-	
-	dir.list_dir_end()
+		_check_if_new_script(file_path)
 
 func _check_if_new_script(file_path: String) -> void:
-	# Skip if the file is in the addons folder
-	if file_path.begins_with("res://addons/"):
-		return
-	
 	var current_modified_time = FileAccess.get_modified_time(file_path)
 	var current_size = _get_file_size(file_path)
+	var current_time = Time.get_unix_time_from_system()
+	var time_diff = current_time - current_modified_time
 	
-	# Check if this is a truly new file
 	var is_new_file = false
 	
 	if file_path in tracked_files:
 		var tracked_info = tracked_files[file_path]
-		# File is considered new if it has a different size and very recent modification time
-		var time_diff = Time.get_unix_time_from_system() - current_modified_time
-		if time_diff < 3.0 and current_size != tracked_info["size"]:
-			# Additional check: see if the file content suggests it's a new script
+		# Check if file was modified recently and size changed
+		if time_diff < 5.0 and current_size != tracked_info["size"]:
 			is_new_file = _is_likely_new_script(file_path)
+			if is_new_file:
+				print("[AutoClassName] Detected modified script: ", file_path)
 	else:
-		# File wasn't tracked before, so it's new
-		var time_diff = Time.get_unix_time_from_system() - current_modified_time
-		if time_diff < 3.0:  # Created within last 3 seconds
+		# Completely new file
+		if time_diff < 5.0:
 			is_new_file = true
+			print("[AutoClassName] Detected new script: ", file_path)
 	
-	# Update tracking info
+	# Update tracking regardless
 	tracked_files[file_path] = {
 		"modified_time": current_modified_time,
 		"size": current_size
@@ -128,76 +120,83 @@ func _is_likely_new_script(file_path: String) -> bool:
 	var content = file.get_as_text()
 	file.close()
 	
-	# Check if it's a very minimal script (likely just created)
+	# Skip if already has class_name
+	if "class_name " in content:
+		return false
+	
+	# Count meaningful lines
 	var lines = content.split("\n")
-	var non_empty_lines = 0
-	var has_extends = false
-	var has_class_name = false
+	var meaningful_lines = 0
 	
 	for line in lines:
 		var trimmed = line.strip_edges()
 		if trimmed.length() > 0 and not trimmed.begins_with("#"):
-			non_empty_lines += 1
-			if trimmed.begins_with("extends"):
-				has_extends = true
-			elif trimmed.begins_with("class_name"):
-				has_class_name = true
+			meaningful_lines += 1
 	
-	# Consider it a new script if:
-	# - It has very few lines (1-3 non-empty lines)
-	# - It has extends but no class_name
-	# - Or it's completely empty
-	return (non_empty_lines <= 3 and not has_class_name) or non_empty_lines == 0
+	# Consider it new if it has very few meaningful lines
+	return meaningful_lines <= 5
 
 func _add_class_name_to_new_script(file_path: String) -> void:
+	print("[AutoClassName] Processing: ", file_path)
+	
 	var file = FileAccess.open(file_path, FileAccess.READ)
 	if not file:
+		print("[AutoClassName] ERROR: Could not read file")
 		return
 	
 	var content = file.get_as_text()
 	file.close()
 	
-	# Skip if the file already has a class_name declaration
-	if content.find("class_name ") != -1:
+	# Skip if already has class_name
+	if "class_name " in content:
+		print("[AutoClassName] File already has class_name")
 		return
 	
-	# Get the class name from the file name
-	var file_name = file_path.get_file()
-	var class_name_str = file_name.get_basename()
+	# Generate class name from filename
+	var file_name = file_path.get_file().get_basename()
+	var class_name_str = _snake_case_to_pascal_case(file_name)
 	
-	# Convert to PascalCase (assuming file names are snake_case)
-	var parts = class_name_str.split("_")
-	class_name_str = ""
-	for part in parts:
-		if part.length() > 0:
-			class_name_str += part[0].to_upper() + part.substr(1)
+	print("[AutoClassName] Generated class name: ", class_name_str)
 	
-	# Add the class_name at the top of the file
+	# Add class_name at the top
 	var new_content = "class_name " + class_name_str + "\n" + content
 	
 	var write_file = FileAccess.open(file_path, FileAccess.WRITE)
 	if write_file:
 		write_file.store_string(new_content)
 		write_file.close()
+		print("[AutoClassName] ✓ Added class_name to: ", file_path)
 		
-		# Reload the script if it's currently open
-		_reload_current_script(file_path)
-		
-		print("Added class_name to new script: ", file_path)
+		# Reload if currently open
+		_reload_script_if_open(file_path)
+	else:
+		print("[AutoClassName] ERROR: Could not write to file")
 
-func _reload_current_script(file_path: String) -> void:
-	# Get all script editor tabs
-	var editor_tabs = script_editor.get_open_scripts()
+func _snake_case_to_pascal_case(snake_str: String) -> String:
+	var parts = snake_str.split("_")
+	var pascal_str = ""
 	
-	for script_obj in editor_tabs:
+	for part in parts:
+		if part.length() > 0:
+			pascal_str += part[0].to_upper() + part.substr(1)
+	
+	return pascal_str
+
+func _reload_script_if_open(file_path: String) -> void:
+	# Force filesystem refresh first
+	file_system.scan()
+	
+	# Try multiple reload approaches
+	var open_scripts = script_editor.get_open_scripts()
+	for script_obj in open_scripts:
 		if script_obj.resource_path == file_path:
-			# Force reload of the script
+			print("[AutoClassName] Reloading open script...")
 			script_editor.reload_scripts()
+			
+			# Additional reload attempt
+			await get_tree().process_frame
+			script_editor.goto_line(0)  # Force refresh by moving cursor
 			break
 
-# Plugin configuration
 func get_plugin_name() -> String:
 	return "Auto Class Name"
-
-func get_plugin_icon() -> Texture2D:
-	return get_editor_interface().get_base_control().get_theme_icon("Script", "EditorIcons")
